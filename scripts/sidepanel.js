@@ -2,8 +2,7 @@ import CONFIG from './config.js';
 
 // Add the formatting function directly
 function convertMarkdownToHtml(text) {
-    console.log('Converting markdown to HTML...');
-    const converted = text
+    return text
         // Convert headers
         .replace(/### (.*?)\n/g, '<h3>$1</h3>')
         .replace(/## (.*?)\n/g, '<h2>$1</h2>')
@@ -20,9 +19,6 @@ function convertMarkdownToHtml(text) {
         .replace(/\d+\. (.*?)(\n|$)/g, '<li>$1</li>')
         // Convert line breaks
         .replace(/\n/g, '<br>');
-    
-    console.log('Conversion complete:', converted);
-    return converted;
 }
 
 const FINANCIAL_SYSTEM_PROMPT = `You are an expert financial advisor and market analyst. Your role is to:
@@ -173,15 +169,15 @@ function initializeChat() {
     async function sendMessage() {
         const message = chatInput.value.trim();
         if (!message) return;
-
+    
         appendMessage('user', message);
         chatInput.value = '';
-
+    
         const loadingDiv = document.createElement('div');
         loadingDiv.className = 'loading';
         loadingDiv.textContent = 'Analyzing financial data...';
         chatMessages.appendChild(loadingDiv);
-
+    
         try {
             let context;
             if (isFirstMessage && pageContent) {
@@ -190,16 +186,18 @@ function initializeChat() {
             } else {
                 context = message;
             }
-
+    
             const response = await callOpenAI(context);
             chatMessages.removeChild(loadingDiv);
+            
+            // Format the AI response
             appendMessage('assistant', response);
             
             conversationHistory.push(
                 { role: 'user', content: message },
                 { role: 'assistant', content: response }
             );
-
+    
         } catch (error) {
             console.error('Chat error:', error);
             chatMessages.removeChild(loadingDiv);
@@ -210,7 +208,14 @@ function initializeChat() {
     function appendMessage(role, content) {
         const messageDiv = document.createElement('div');
         messageDiv.className = `chat-message ${role}-message`;
-        messageDiv.textContent = content;
+        
+        // Format the content if it's from the assistant
+        if (role === 'assistant') {
+            messageDiv.innerHTML = convertMarkdownToHtml(content);
+        } else {
+            messageDiv.textContent = content;
+        }
+        
         chatMessages.appendChild(messageDiv);
         chatMessages.scrollTop = chatMessages.scrollHeight;
     }
@@ -233,7 +238,7 @@ function initializeChat() {
                         content: message
                     }
                 ];
-
+    
                 const response = await fetch(endpoint, {
                     method: 'POST',
                     headers: {
@@ -243,7 +248,10 @@ function initializeChat() {
                     body: JSON.stringify({
                         messages: messages,
                         temperature: 0.7,
-                        max_tokens: 800
+                        max_tokens: 2000, // Increased token limit for detailed responses
+                        presence_penalty: 0,
+                        frequency_penalty: 0,
+                        top_p: 1
                     })
                 });
     
@@ -394,66 +402,49 @@ async function handleChat(userMessage) {
     }
 
     try {
-        console.log('1. Displaying user message');
         // Display user message
         const userDiv = document.createElement('div');
         userDiv.className = 'user-message';
         userDiv.textContent = userMessage;
         messagesContainer.appendChild(userDiv);
 
-        console.log('2. Adding loading indicator');
         // Show loading indicator
         const loadingDiv = document.createElement('div');
         loadingDiv.className = 'ai-message loading';
         loadingDiv.textContent = 'AI is thinking...';
         messagesContainer.appendChild(loadingDiv);
 
-        // Send message to background script with explicit error handling
-        console.log('3. Preparing to send message to background');
-        let response;
-        try {
-            response = await new Promise((resolve, reject) => {
-                chrome.runtime.sendMessage({
-                    action: "sidebarChat",
-                    prompt: userMessage,
-                    context: selectedText || ''
-                }, (result) => {
-                    if (chrome.runtime.lastError) {
-                        console.error('Chrome runtime error:', chrome.runtime.lastError);
-                        reject(chrome.runtime.lastError);
-                        return;
-                    }
-                    console.log('4. Message response received:', result);
-                    resolve(result);
-                });
+        // Send message to background script
+        const response = await new Promise((resolve, reject) => {
+            chrome.runtime.sendMessage({
+                action: "sidebarChat",
+                prompt: userMessage,
+                context: selectedText || ''
+            }, (result) => {
+                if (chrome.runtime.lastError) {
+                    reject(chrome.runtime.lastError);
+                    return;
+                }
+                resolve(result);
             });
-        } catch (error) {
-            console.error('5. Error sending message:', error);
-            throw error;
-        }
+        });
 
-        console.log('6. Removing loading indicator');
+        // Remove loading indicator
         loadingDiv.remove();
 
-        console.log('7. Processing response:', response);
-
         if (!response.success) {
-            console.error('8a. Response indicates failure');
             throw new Error(response.error || 'Unknown error occurred');
         }
 
-        if (response.formattedAnswer) {
-            console.log('8b. Adding formatted response to DOM');
-            const aiMessageDiv = document.createElement('div');
-            aiMessageDiv.className = 'ai-message';
-            aiMessageDiv.innerHTML = response.formattedAnswer;
-            messagesContainer.appendChild(aiMessageDiv);
-            
-            console.log('9. Message added successfully');
-        } else {
-            console.error('8c. No formatted answer in response');
-            throw new Error('No formatted answer in response');
-        }
+        // Create AI message container
+        const aiMessageDiv = document.createElement('div');
+        aiMessageDiv.className = 'ai-message';
+        
+        // Convert markdown to HTML and set it
+        const formattedAnswer = convertMarkdownToHtml(response.answer);
+        aiMessageDiv.innerHTML = formattedAnswer;
+        
+        messagesContainer.appendChild(aiMessageDiv);
 
     } catch (error) {
         console.error('Error in handleChat:', error);
@@ -466,7 +457,7 @@ async function handleChat(userMessage) {
         messagesContainer.appendChild(errorDiv);
     }
 
-    console.log('10. Scrolling to bottom');
+    // Scroll to bottom
     messagesContainer.scrollTop = messagesContainer.scrollHeight;
 }
 

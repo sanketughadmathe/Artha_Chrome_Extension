@@ -124,20 +124,43 @@ a:hover {
 .chat-message {
     margin-bottom: 16px;
     max-width: 80%;
+    padding: 10px;
+    border-radius: 8px;
 }
 
 .user-message {
     margin-left: auto;
     background-color: #2196F3;
     color: white;
-    padding: 8px 12px;
     border-radius: 12px 12px 0 12px;
 }
 
 .assistant-message {
     background-color: #f1f1f1;
-    padding: 8px 12px;
     border-radius: 12px 12px 12px 0;
+}
+.assistant-message h1,
+.assistant-message h2,
+.assistant-message h3 {
+    margin: 10px 0;
+    color: #333;
+}
+
+.assistant-message ul,
+.assistant-message ol {
+    margin-left: 20px;
+}
+
+.assistant-message li {
+    margin: 5px 0;
+}
+
+.assistant-message strong {
+    font-weight: bold;
+}
+
+.assistant-message em {
+    font-style: italic;
 }
 
 .chat-input-container {
@@ -236,17 +259,9 @@ a:hover {
     color: #2c3e50;
 }
 
-.ai-message h1 {
-    font-size: 1.4em;
-}
-
-.ai-message h2 {
-    font-size: 1.2em;
-}
-
-.ai-message h3 {
-    font-size: 1.1em;
-}
+.ai-message h1 { font-size: 1.4em; }
+.ai-message h2 { font-size: 1.2em; }
+.ai-message h3 { font-size: 1.1em; }
 
 .ai-message strong {
     font-weight: 600;

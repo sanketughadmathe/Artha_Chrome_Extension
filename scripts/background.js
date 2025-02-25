@@ -31,7 +31,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         });
     } else if (request.action === "chat") {
         // Quick Ask chat (with token limit)
-        callOpenAI(request.prompt, request.context, 3, true)
+        // Add a specific prompt for brief responses
+        const briefPrompt = `Please provide a brief and concise response in 2-3 sentences: ${request.prompt}`;
+        callOpenAI(briefPrompt, request.context, 3, true) // Added boolean for isQuickAsk
             .then(response => {
                 sendResponse({ answer: response });
             })
@@ -42,21 +44,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     } else if (request.action === "sidebarChat") {
         console.log('Processing sidebarChat request');
+        // Sidepanel chat - no token limit
         callOpenAI(request.prompt, request.context)
             .then(response => {
                 console.log('OpenAI response in background:', response);
-                // Send only the necessary data
-                if (response && response.choices && response.choices[0] && response.choices[0].message) {
-                    sendResponse({
-                        success: true,
-                        answer: response.choices[0].message.content
-                    });
-                } else {
-                    sendResponse({
-                        success: false,
-                        error: 'Invalid response format'
-                    });
-                }
+                sendResponse({
+                    success: true,
+                    answer: response // This should be the markdown text from OpenAI
+                });
             })
             .catch(error => {
                 console.error('Chat error in background:', error);
@@ -80,7 +75,9 @@ async function callOpenAI(message, context = '', retries = 3, isQuickAsk = false
             const messages = [
                 {
                     role: "system",
-                    content: FINANCIAL_SYSTEM_PROMPT
+                    content: isQuickAsk 
+                    ? FINANCIAL_SYSTEM_PROMPT + "\nProvide very brief, concise responses."
+                    : FINANCIAL_SYSTEM_PROMPT
                 },
                 {
                     role: "user",
@@ -97,7 +94,10 @@ async function callOpenAI(message, context = '', retries = 3, isQuickAsk = false
                 body: JSON.stringify({
                     messages: messages,
                     temperature: 0.7,
-                    max_tokens: isQuickAsk ? QUICK_ASK_TOKEN_LIMIT : 800
+                    max_tokens: isQuickAsk ? QUICK_ASK_TOKEN_LIMIT : 800, // Different token limits
+                    // Add for more concise responses in Quick Ask
+                    top_p: isQuickAsk ? 0.5 : 1,
+                    presence_penalty: isQuickAsk ? 0.6 : 0
                 })
             });
 
