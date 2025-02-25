@@ -1,0 +1,46 @@
+{
+  "manifest_version": 3,
+  "name": "Artha Intelligence",
+  "version": "1.0",
+  "description": "Shows website content in a side panel",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "sidePanel",
+    "tabs",
+    "storage"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "scripts/background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "css": ["styles/tooltip.css"],
+      "js": ["scripts/content.js"],
+      "type": "module"
+    }
+  ],
+  "action": {
+    "default_title": "Click to open sidebar"
+  },
+  "side_panel": {
+    "default_path": "sidepanel/sidepanel.html"
+  },
+  "options_page": "options/options.html",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "web_accessible_resources": [{
+    "resources": [
+      "icons/icon16.png"
+    ],
+    "matches": ["<all_urls>"]
+  }]
+}

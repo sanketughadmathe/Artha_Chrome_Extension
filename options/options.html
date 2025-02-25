@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body { padding: 15px; font-family: Arial, sans-serif; }
+    .option-group { margin-bottom: 20px; }
+    label { display: block; margin: 8px 0; }
+    code { background: #eee; padding: 2px 4px; }
+  </style>
+</head>
+<body>
+  <div class="option-group">
+    <h3>Included Elements</h3>
+    <p>Comma-separated list of HTML tags (e.g., div,p,a):</p>
+    <input type="text" id="includeTags" style="width: 300px;" 
+           placeholder="Example: div,p,a,h1,h2,h3,img">
+    <p class="hint">Default: p,a,li,h1,h2,h3,h4,h5,h6,span,div,img</p>
+  </div>
+
+  <button id="save">Save Settings</button>
+  <script src="../scripts/options.js"></script>
+</body>
+</html>
