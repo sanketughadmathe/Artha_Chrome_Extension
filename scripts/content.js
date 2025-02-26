@@ -22,9 +22,6 @@ function convertMarkdownToHtml(text) {
 const selectionPopup = document.createElement('div');
 selectionPopup.className = 'selection-popup';
 selectionPopup.innerHTML = `
-    <button class="selection-icon edit-icon">✏️</button>
-    <button class="selection-icon copy-icon">📋</button>
-    <button class="selection-icon translate-icon">🌐</button>
     <button class="selection-icon chat-icon">
         <img src="${chrome.runtime.getURL('icons/icon16.png')}" alt="Chat" />
         <span class="icon-text">Chat with AI</span>

@@ -1,25 +1,9 @@
 import CONFIG from './config.js';
 
-// Add the formatting function directly
-function convertMarkdownToHtml(text) {
-    return text
-        // Convert headers
-        .replace(/### (.*?)\n/g, '<h3>$1</h3>')
-        .replace(/## (.*?)\n/g, '<h2>$1</h2>')
-        .replace(/# (.*?)\n/g, '<h1>$1</h1>')
-        // Convert bold
-        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-        // Convert italics
-        .replace(/\*(.*?)\*/g, '<em>$1</em>')
-        // Convert bullet points
-        .replace(/- (.*?)(\n|$)/g, '<li>$1</li>')
-        // Wrap lists in ul
-        .replace(/(<li>.*?<\/li>)\n*/g, '<ul>$1</ul>')
-        // Convert numbered lists
-        .replace(/\d+\. (.*?)(\n|$)/g, '<li>$1</li>')
-        // Convert line breaks
-        .replace(/\n/g, '<br>');
-}
+// Global variables
+let pageContent = null;
+let isFirstMessage = true;
+let conversationHistory = [];
 
 const FINANCIAL_SYSTEM_PROMPT = `You are an expert financial advisor and market analyst. Your role is to:
 1. Analyze financial market data, trading information, and investment opportunities
@@ -37,50 +21,217 @@ Remember to:
 - Point out both opportunities and potential risks
 - Use clear, non-technical language when possible`;
 
-class RateLimiter {
-    constructor(maxRequests, timeWindow) {
-        this.maxRequests = maxRequests;
-        this.timeWindow = timeWindow;
-        this.requests = [];
-    }
+// Utility Functions
+function convertMarkdownToHtml(text) {
+    return text
+        .replace(/### (.*?)\n/g, '<h3>$1</h3>')
+        .replace(/## (.*?)\n/g, '<h2>$1</h2>')
+        .replace(/# (.*?)\n/g, '<h1>$1</h1>')
+        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*(.*?)\*/g, '<em>$1</em>')
+        .replace(/- (.*?)(\n|$)/g, '<li>$1</li>')
+        .replace(/(<li>.*?<\/li>)\n*/g, '<ul>$1</ul>')
+        .replace(/\d+\. (.*?)(\n|$)/g, '<li>$1</li>')
+        .replace(/\n/g, '<br>');
+}
 
-    async waitForAvailability() {
-        const now = Date.now();
-        this.requests = this.requests.filter(time => time > now - this.timeWindow);
+function formatFinancialContent(content) {
+    return `
+    FINANCIAL CONTEXT:
+    ----------------
+    ${content}
+
+    ANALYSIS REQUESTED:
+    Please analyze this financial information considering:
+    1. Market context and trends
+    2. Key metrics and indicators
+    3. Potential risks and opportunities
+    4. Technical analysis points if applicable
+    5. Related market factors
+    `;
+}
+
+// Content Extraction
+async function getPageContent() {
+    try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
         
-        if (this.requests.length >= this.maxRequests) {
-            const oldestRequest = this.requests[0];
-            const waitTime = oldestRequest + this.timeWindow - now;
-            await new Promise(resolve => setTimeout(resolve, waitTime));
+        if (!tab) {
+            throw new Error('No active tab found');
         }
-        
-        this.requests.push(now);
+
+        const results = await chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            function: () => {
+                function extractNumbers(text) {
+                    return text.match(/[\d,]+\.?\d*/g) || [];
+                }
+
+                function findFinancialTerms(text) {
+                    const terms = ['stock', 'price', 'market', 'trade', 'buy', 'sell', 'bull', 'bear', 'dividend', 'yield'];
+                    return terms.filter(term => text.toLowerCase().includes(term));
+                }
+
+                return {
+                    url: window.location.href,
+                    title: document.title,
+                    content: document.body.innerText,
+                    financialData: {
+                        numbers: extractNumbers(document.body.innerText),
+                        terms: findFinancialTerms(document.body.innerText),
+                        priceElements: Array.from(document.querySelectorAll('[data-symbol], .price, .quote'))
+                            .map(el => el.textContent.trim()),
+                        tableData: Array.from(document.querySelectorAll('table'))
+                            .map(table => table.textContent.trim())
+                    }
+                };
+            }
+        });
+
+        if (!results || !results[0]) {
+            throw new Error('No content retrieved');
+        }
+
+        return results[0].result;
+    } catch (error) {
+        console.error('Error getting page content:', error);
+        throw error;
     }
 }
 
-// // Create rate limiter instance
-// const rateLimiter = new RateLimiter(3, 1000); // 3 requests per second
+// Chat Functions
+async function callOpenAI(message, retries = 3) {
+    for (let i = 0; i < retries; i++) {
+        try {
+            const endpoint = `${CONFIG.AZURE_OPENAI_ENDPOINT}/openai/deployments/${CONFIG.AZURE_DEPLOYMENT_NAME}/chat/completions?api-version=${CONFIG.API_VERSION}`;
+            
+            console.log('Calling Azure OpenAI endpoint:', endpoint);
+            
+            const messages = [
+                {
+                    role: "system",
+                    content: FINANCIAL_SYSTEM_PROMPT + "\nProvide detailed, comprehensive analysis when appropriate."
+                },
+                ...conversationHistory,
+                {
+                    role: "user",
+                    content: message
+                }
+            ];
 
-let pageContent = null;
-let isFirstMessage = true;
-let conversationHistory = [];
-let messagesContainer;
-let selectedText = '';
+            const response = await fetch(endpoint, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'api-key': CONFIG.AZURE_OPENAI_KEY
+                },
+                body: JSON.stringify({
+                    messages: messages,
+                    temperature: 0.7,
+                    max_tokens: 2000,
+                    presence_penalty: 0,
+                    frequency_penalty: 0,
+                    top_p: 1
+                })
+            });
 
-// Wait for DOM to be fully loaded
+            console.log('Response status:', response.status);
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.error?.message || 'Failed to get response from Azure OpenAI');
+            }
+
+            const data = await response.json();
+            console.log('Azure OpenAI response:', data);
+            
+            return data.choices[0].message.content;
+        } catch (error) {
+            console.error(`Attempt ${i + 1} failed:`, error);
+            if (i === retries - 1) throw error;
+            
+            if (error.message.includes('rate limit')) {
+                await new Promise(resolve => setTimeout(resolve, 2000 * (i + 1)));
+            }
+        }
+    }
+}
+
+function appendMessage(role, content) {
+    const messagesContainer = document.querySelector('#chat-messages');
+    const messageDiv = document.createElement('div');
+    messageDiv.className = `chat-message ${role}-message`;
+    
+    if (role === 'assistant') {
+        messageDiv.innerHTML = convertMarkdownToHtml(content);
+    } else {
+        messageDiv.textContent = content;
+    }
+    
+    messagesContainer.appendChild(messageDiv);
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+}
+
+async function sendMessage(message) {
+    if (!message) return;
+
+    const messagesContainer = document.querySelector('#chat-messages');
+    
+    appendMessage('user', message);
+
+    const loadingDiv = document.createElement('div');
+    loadingDiv.className = 'loading';
+    loadingDiv.textContent = 'Analyzing financial data...';
+    messagesContainer.appendChild(loadingDiv);
+
+    try {
+        let context = message;
+
+        if (isFirstMessage) {
+            try {
+                loadingDiv.textContent = 'Gathering webpage content...';
+                const pageData = await getPageContent();
+                pageContent = JSON.stringify(pageData, null, 2);
+                context = formatFinancialContent(pageContent) + `\nUser question: ${message}`;
+                
+                const contentNotice = document.createElement('div');
+                contentNotice.className = 'content-notice';
+                contentNotice.textContent = 'Page content analyzed';
+                messagesContainer.appendChild(contentNotice);
+                setTimeout(() => contentNotice.remove(), 3000);
+            } catch (error) {
+                console.error('Error auto-grabbing content:', error);
+            }
+            isFirstMessage = false;
+        }
+
+        const response = await callOpenAI(context);
+        messagesContainer.removeChild(loadingDiv);
+        appendMessage('assistant', response);
+        
+        conversationHistory.push(
+            { role: 'user', content: message },
+            { role: 'assistant', content: response }
+        );
+
+    } catch (error) {
+        console.error('Chat error:', error);
+        if (loadingDiv && loadingDiv.parentNode) {
+            messagesContainer.removeChild(loadingDiv);
+        }
+        appendMessage('assistant', `Error analyzing financial data: ${error.message}`);
+    }
+
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+}
+
+// Initialize when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
     console.log('DOM Content Loaded');
     
-    initializeTabs();
-    initializeChat();
-    initializeContentGrabber();
-
-    // Get DOM elements with correct selectors
-    messagesContainer = document.querySelector('#chat-messages'); // Update selector to match your HTML
-    console.log('Messages container found:', messagesContainer);
-    
-    const chatInput = document.getElementById('chat-input');
-    const sendButton = document.getElementById('send-button');
+    const messagesContainer = document.querySelector('#chat-messages');
+    const chatInput = document.querySelector('#chat-input');
+    const sendButton = document.querySelector('#send-message');
     
     console.log('Elements found:', {
         messagesContainer: messagesContainer,
@@ -88,383 +239,52 @@ document.addEventListener('DOMContentLoaded', () => {
         sendButton: sendButton
     });
 
-    // Add event listeners only if elements exist
-    if (chatInput) {
+    if (chatInput && sendButton) {
         chatInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
-                console.log('Enter key pressed');
                 e.preventDefault();
                 const message = chatInput.value.trim();
                 if (message) {
-                    console.log('Handling chat message from Enter key');
-                    handleChat(message);
+                    sendMessage(message);
                     chatInput.value = '';
                 }
             }
         });
-        console.log('Chat input event listener added');
-    }
 
-    if (sendButton) {
         sendButton.addEventListener('click', () => {
             const message = chatInput.value.trim();
             if (message) {
-                console.log('Handling chat message from button click');
-                handleChat(message);
+                sendMessage(message);
                 chatInput.value = '';
             }
         });
-        console.log('Send button event listener added');
+    } else {
+        console.error('Could not find chat input or send button');
     }
 });
 
-function formatFinancialContent(content) {
-return `
-FINANCIAL CONTEXT:
-----------------
-${content}
+// Add style for content notice
+const style = document.createElement('style');
+style.textContent = `
+    .content-notice {
+        background-color: #e3f2fd;
+        color: #1976d2;
+        padding: 8px;
+        border-radius: 4px;
+        font-size: 0.9em;
+        margin: 8px 0;
+        text-align: center;
+        animation: fadeIn 0.3s ease-in-out;
+    }
 
-ANALYSIS REQUESTED:
-Please analyze this financial information considering:
-1. Market context and trends
-2. Key metrics and indicators
-3. Potential risks and opportunities
-4. Technical analysis points if applicable
-5. Related market factors
+    @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(-10px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
 `;
-}
+document.head.appendChild(style);
 
-function initializeTabs() {
-    const tabButtons = document.querySelectorAll('.tab-button');
-    tabButtons.forEach(button => {
-        button.addEventListener('click', () => {
-            const tabName = button.dataset.tab;
-            
-            // Update active tab button
-            tabButtons.forEach(btn => btn.classList.remove('active'));
-            button.classList.add('active');
-            
-            // Update active tab content
-            document.querySelectorAll('.tab-content').forEach(content => {
-                content.classList.remove('active');
-            });
-            document.getElementById(`${tabName}-tab`).classList.add('active');
-        });
-    });
-}
-
-function initializeChat() {
-    const chatMessages = document.getElementById('chat-messages');
-    const chatInput = document.getElementById('chat-input');
-    const sendButton = document.getElementById('send-message');
-
-    sendButton.addEventListener('click', () => sendMessage());
-    chatInput.addEventListener('keypress', (e) => {
-        if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault();
-            sendMessage();
-        }
-    });
-
-    async function sendMessage() {
-        const message = chatInput.value.trim();
-        if (!message) return;
-    
-        appendMessage('user', message);
-        chatInput.value = '';
-    
-        const loadingDiv = document.createElement('div');
-        loadingDiv.className = 'loading';
-        loadingDiv.textContent = 'Analyzing financial data...';
-        chatMessages.appendChild(loadingDiv);
-    
-        try {
-            let context;
-            if (isFirstMessage && pageContent) {
-                context = formatFinancialContent(pageContent) + `\nUser question: ${message}`;
-                isFirstMessage = false;
-            } else {
-                context = message;
-            }
-    
-            const response = await callOpenAI(context);
-            chatMessages.removeChild(loadingDiv);
-            
-            // Format the AI response
-            appendMessage('assistant', response);
-            
-            conversationHistory.push(
-                { role: 'user', content: message },
-                { role: 'assistant', content: response }
-            );
-    
-        } catch (error) {
-            console.error('Chat error:', error);
-            chatMessages.removeChild(loadingDiv);
-            appendMessage('assistant', `Error analyzing financial data: ${error.message}`);
-        }
-    }
-
-    function appendMessage(role, content) {
-        const messageDiv = document.createElement('div');
-        messageDiv.className = `chat-message ${role}-message`;
-        
-        // Format the content if it's from the assistant
-        if (role === 'assistant') {
-            messageDiv.innerHTML = convertMarkdownToHtml(content);
-        } else {
-            messageDiv.textContent = content;
-        }
-        
-        chatMessages.appendChild(messageDiv);
-        chatMessages.scrollTop = chatMessages.scrollHeight;
-    }
-
-    async function callOpenAI(message, retries = 3) {
-        for (let i = 0; i < retries; i++) {
-            try {
-                const endpoint = `${CONFIG.AZURE_OPENAI_ENDPOINT}/openai/deployments/${CONFIG.AZURE_DEPLOYMENT_NAME}/chat/completions?api-version=${CONFIG.API_VERSION}`;
-                
-                console.log('Calling Azure OpenAI endpoint:', endpoint);
-                
-                const messages = [
-                    {
-                        role: "system",
-                        content: FINANCIAL_SYSTEM_PROMPT
-                    },
-                    ...conversationHistory,
-                    {
-                        role: "user",
-                        content: message
-                    }
-                ];
-    
-                const response = await fetch(endpoint, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'api-key': CONFIG.AZURE_OPENAI_KEY
-                    },
-                    body: JSON.stringify({
-                        messages: messages,
-                        temperature: 0.7,
-                        max_tokens: 2000, // Increased token limit for detailed responses
-                        presence_penalty: 0,
-                        frequency_penalty: 0,
-                        top_p: 1
-                    })
-                });
-    
-                console.log('Response status:', response.status);
-    
-                if (!response.ok) {
-                    const errorData = await response.json();
-                    console.error('Azure OpenAI error response:', errorData);
-                    throw new Error(errorData.error?.message || 'Failed to get response from Azure OpenAI');
-                }
-    
-                const data = await response.json();
-                console.log('Azure OpenAI response:', data);
-                
-                return data.choices[0].message.content;
-            } catch (error) {
-                console.error(`Attempt ${i + 1} failed:`, error);
-                if (i === retries - 1) throw error;
-                
-                if (error.message.includes('rate limit')) {
-                    await new Promise(resolve => setTimeout(resolve, 2000 * (i + 1)));
-                }
-            }
-        }
-    }
-
-    // Add a function to reset the conversation
-    function resetConversation() {
-        isFirstMessage = true;
-        conversationHistory = [];
-        chatMessages.innerHTML = '';
-        appendMessage('assistant', 'Conversation has been reset. You can start a new conversation with the webpage content.');
-    }
-
-    // Add a reset button to the chat interface (optional)
-    const resetButton = document.createElement('button');
-    resetButton.textContent = 'Reset Conversation';
-    resetButton.className = 'reset-button';
-    resetButton.addEventListener('click', resetConversation);
-    document.querySelector('.chat-container').insertBefore(resetButton, chatMessages);
-}
-
-function initializeContentGrabber() {
-    const statusDiv = document.getElementById('status');
-    const contentDiv = document.getElementById('content');
-    const grabButton = document.getElementById('grabContent');
-
-    grabButton.addEventListener('click', async () => {
-        console.log('Analyzing financial data...');
-        statusDiv.textContent = 'Analyzing current page...';
-
-        try {
-            const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-            
-            if (!tab) {
-                throw new Error('No active tab found');
-            }
-
-            statusDiv.textContent = 'Extracting financial data...';
-
-            // Enhanced script to extract financial data
-            const results = await chrome.scripting.executeScript({
-                target: { tabId: tab.id },
-                function: () => {
-                    // Helper function to extract numerical data
-                    function extractNumbers(text) {
-                        return text.match(/[\d,]+\.?\d*/g) || [];
-                    }
-
-                    // Helper function to identify financial terms
-                    function findFinancialTerms(text) {
-                        const terms = ['stock', 'price', 'market', 'trade', 'buy', 'sell', 'bull', 'bear', 'dividend', 'yield'];
-                        return terms.filter(term => text.toLowerCase().includes(term));
-                    }
-
-                    return {
-                        url: window.location.href,
-                        title: document.title,
-                        content: document.body.innerText,
-                        // Extract specific financial elements
-                        financialData: {
-                            numbers: extractNumbers(document.body.innerText),
-                            terms: findFinancialTerms(document.body.innerText),
-                            // Add specific selectors for common financial websites
-                            priceElements: Array.from(document.querySelectorAll('[data-symbol], .price, .quote'))
-                                .map(el => el.textContent.trim()),
-                            tableData: Array.from(document.querySelectorAll('table'))
-                                .map(table => table.textContent.trim())
-                        }
-                    };
-                }
-            });
-
-            if (!results || !results[0]) {
-                throw new Error('No financial data retrieved');
-            }
-
-            const pageData = results[0].result;
-            pageContent = JSON.stringify(pageData, null, 2); // Store structured data
-
-            // Display the analyzed content
-            contentDiv.innerHTML = `
-                <div class="content-section">
-                    <h3>Financial Analysis</h3>
-                    <p>Source: ${pageData.url}</p>
-                    <p>Page Title: ${pageData.title}</p>
-                    
-                    <h4>Detected Financial Data:</h4>
-                    <ul>
-                        ${pageData.financialData.terms.map(term => 
-                            `<li>Found term: ${term}</li>`
-                        ).join('')}
-                    </ul>
-                    
-                    <h4>Numerical Data:</h4>
-                    <ul>
-                        ${pageData.financialData.numbers.slice(0, 10).map(num => 
-                            `<li>${num}</li>`
-                        ).join('')}
-                    </ul>
-                </div>
-            `;
-
-            statusDiv.textContent = 'Financial data analysis complete!';
-            isFirstMessage = true; // Reset conversation for new analysis
-            conversationHistory = [];
-
-        } catch (error) {
-            console.error('Error analyzing financial data:', error);
-            statusDiv.textContent = 'Error in financial analysis!';
-            contentDiv.innerHTML = `
-                <div class="error">
-                    <p>Error: ${error.message}</p>
-                    <p>Please try again or check if this page contains financial data.</p>
-                </div>
-            `;
-        }
-    });
-}
-
-
-async function handleChat(userMessage) {
-    console.log('handleChat started with message:', userMessage);
-
-    if (!messagesContainer) {
-        console.error('Messages container not found!');
-        return;
-    }
-
-    try {
-        // Display user message
-        const userDiv = document.createElement('div');
-        userDiv.className = 'user-message';
-        userDiv.textContent = userMessage;
-        messagesContainer.appendChild(userDiv);
-
-        // Show loading indicator
-        const loadingDiv = document.createElement('div');
-        loadingDiv.className = 'ai-message loading';
-        loadingDiv.textContent = 'AI is thinking...';
-        messagesContainer.appendChild(loadingDiv);
-
-        // Send message to background script
-        const response = await new Promise((resolve, reject) => {
-            chrome.runtime.sendMessage({
-                action: "sidebarChat",
-                prompt: userMessage,
-                context: selectedText || ''
-            }, (result) => {
-                if (chrome.runtime.lastError) {
-                    reject(chrome.runtime.lastError);
-                    return;
-                }
-                resolve(result);
-            });
-        });
-
-        // Remove loading indicator
-        loadingDiv.remove();
-
-        if (!response.success) {
-            throw new Error(response.error || 'Unknown error occurred');
-        }
-
-        // Create AI message container
-        const aiMessageDiv = document.createElement('div');
-        aiMessageDiv.className = 'ai-message';
-        
-        // Convert markdown to HTML and set it
-        const formattedAnswer = convertMarkdownToHtml(response.answer);
-        aiMessageDiv.innerHTML = formattedAnswer;
-        
-        messagesContainer.appendChild(aiMessageDiv);
-
-    } catch (error) {
-        console.error('Error in handleChat:', error);
-        if (loadingDiv) {
-            loadingDiv.remove();
-        }
-        const errorDiv = document.createElement('div');
-        errorDiv.className = 'error-message';
-        errorDiv.textContent = `Error: ${error.message}`;
-        messagesContainer.appendChild(errorDiv);
-    }
-
-    // Scroll to bottom
-    messagesContainer.scrollTop = messagesContainer.scrollHeight;
-}
-
-// Add console log for when the script loads
-console.log('Sidepanel script loaded');
-
-// Listen for selected text from content script
+// Listen for messages from content script
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     console.log('Message received in sidepanel:', request);
     if (request.action === "textSelected") {
@@ -472,3 +292,5 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         console.log('Selected text updated:', selectedText);
     }
 });
+
+console.log('Sidepanel script loaded');
